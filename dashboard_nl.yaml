@@ -1464,6 +1464,8 @@ views:
 
               - Laadmarge: {{ a.marge_pct }}% ({{ a.marge_kwh }} kWh)
 
+              - Laadvermogen in planning: {{ a.laadvermogen_gebruikt_kw }} kW{% if a.laadvermogen_gemeten_w %} (gemeten {{ (a.laadvermogen_gemeten_w / 1000) | round(2) }} kW){% endif %}, prijs nu {{ a.prijs_nu }}{% if a.in_dal %} (goedkoop dal){% endif %}
+
               - **Nog uit het net laden: {{ a.netladen_vandaag_kwh }} kWh**{% if
               a.geplande_slots | length > 0 %} in {% for s in a.geplande_slots
               %}{{ s.start }}-{{ s.eind }} (€{{ '%.3f' | format(s.prijs) }}){{
@@ -1527,28 +1529,10 @@ views:
             entity: sensor.forecast_verwachte_zon_naar_batterij
             name: Zon naar batterij
             vertical: false
-          - type: entities
-            entities:
-              - entity: input_text.forecast_zon_resterend_vandaag_sensor
-                name: Zon resterend vandaag sensor
-              - entity: input_text.forecast_zon_morgen_sensor
-                name: Zon morgen sensor
-              - entity: input_text.forecast_zon_productie_sensor
-                name: Zonnepanelen productie sensor (totaal kWh)
-              - entity: input_number.forecast_zelfverbruik_overwrite
-                name: Zelfverbruik zon % (alleen invullen indien overwrite)
-              - entity: input_number.forecast_laad_marge
-                name: Batterij laadmarge %
-              - entity: input_number.forecast_gebruik_standaard
-                name: Standaard dagverbruik kWh (tot er historie is)
-              - entity: input_number.forecast_betrouwbaarheid
-                name: Betrouwbaarheid zonvoorspelling % (0 = 100%)
         visibility:
           - condition: state
-            entity: input_boolean.dynamisch_tonen_op_dashboard
+            entity: input_boolean.forecast_tonen_op_dashboard
             state: 'on'
-      - type: grid
-        cards: []
     cards: []
     icon: mdi:battery
     dense_section_placement: false
@@ -3083,7 +3067,7 @@ views:
             heading_style: title
             visibility:
               - condition: state
-                entity: input_boolean.dynamisch_tonen_op_dashboard
+                entity: input_boolean.forecast_tonen_op_dashboard
                 state: 'on'
           - type: markdown
             content: >-
@@ -3100,7 +3084,7 @@ views:
                 entity: input_boolean.help_tonen_op_dashboard
                 state: 'on'
               - condition: state
-                entity: input_boolean.dynamisch_tonen_op_dashboard
+                entity: input_boolean.forecast_tonen_op_dashboard
                 state: 'on'
           - type: entities
             entities:
@@ -3117,10 +3101,55 @@ views:
               - entity: input_number.forecast_gebruik_standaard
                 name: Standaard dagverbruik kWh (tot er historie is)
               - entity: input_number.forecast_betrouwbaarheid
-                name: Betrouwbaarheid zonvoorspelling % (0 = 100%)
+                name: Betrouwbaarheid zonvoorspelling %
+              - entity: input_boolean.forecast_dal_ontladen_blokkeren
+                name: Niet ontladen in goedkoop dal (accu sparen)
+              - entity: sensor.forecast_gemeten_laadvermogen
+                name: Gemeten netlaadvermogen
+              - entity: binary_sensor.forecast_dal_ontladen_geblokkeerd
+                name: Ontladen nu vastgehouden (dal) (0 = 100%)
             visibility:
               - condition: state
-                entity: input_boolean.dynamisch_tonen_op_dashboard
+                entity: input_boolean.forecast_tonen_op_dashboard
+                state: 'on'
+          - type: heading
+            icon: ''
+            heading: Configuratie (HVAC)
+            heading_style: title
+            visibility:
+              - condition: state
+                entity: input_boolean.hvac_tonen_op_dashboard
+                state: 'on'
+          - type: markdown
+            content: >-
+              <ha-alert alert-type="info">Helptekst</ha-alert>Zolang de airco draait, ontladen de NOM-modussen niet (laden uit zon of net blijft werken). Vul de entiteit van je airco in (bv. climate.airco_woonkamer; een vermogenssensor in W kan ook en is vaak nauwkeuriger). Stel optioneel de uren in waarin dit geldt; dezelfde tijd bij Vanaf en Tot betekent de hele dag. Laat de sensor leeg om de functie uit te zetten.
+            text_only: true
+            visibility:
+              - condition: state
+                entity: input_boolean.help_tonen_op_dashboard
+                state: 'on'
+              - condition: state
+                entity: input_boolean.hvac_tonen_op_dashboard
+                state: 'on'
+          - type: entities
+            entities:
+              - entity: input_text.hvac_sensor
+                name: HVAC sensor (bv. climate.airco_woonkamer)
+              - entity: input_datetime.hvac_start
+                name: Alleen laden vanaf
+              - entity: input_datetime.hvac_eind
+                name: Alleen laden tot
+              - entity: input_boolean.hvac_ontladen_bij_duur_uur
+                name: Ontladen toestaan tijdens duur uur
+              - entity: input_number.hvac_drempel_vermogen
+                name: Drempel vermogen W (alleen bij vermogenssensor, 0 = 50 W)
+              - entity: binary_sensor.hvac_actief
+                name: Airco actief
+              - entity: binary_sensor.hvac_ontladen_geblokkeerd
+                name: Ontladen geblokkeerd
+            visibility:
+              - condition: state
+                entity: input_boolean.hvac_tonen_op_dashboard
                 state: 'on'
           - type: heading
             icon: ''
@@ -3130,7 +3159,7 @@ views:
             content: >-
               <ha-alert alert-type="info">Helptekst</ha-alert>Hier stel je in of
               je de Dynamische informatie wilt verbergen of tonen op het eerste
-              tabblad via **Dynamisch Tonen Op Dashboard⚙️**.
+              tabblad via **Dynamisch Tonen Op Dashboard⚙️**. Met **Forecasting Tonen Op Dashboard** toon of verberg je de Forecasting-sectie en de Forecasting-instellingen.
             text_only: true
             visibility:
               - condition: state
@@ -3141,6 +3170,10 @@ views:
               - entity: input_boolean.help_tonen_op_dashboard
               - entity: input_boolean.pv_tonen_op_dashboard
               - entity: input_boolean.dynamisch_tonen_op_dashboard
+              - entity: input_boolean.forecast_tonen_op_dashboard
+                name: Forecasting Tonen Op Dashboard
+              - entity: input_boolean.hvac_tonen_op_dashboard
+                name: HVAC Instellingen Tonen Op Dashboard
       - type: grid
         cards:
           - type: heading

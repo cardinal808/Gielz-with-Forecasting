@@ -70,6 +70,9 @@ input_number:
     unit_of_measurement: "%"
 
 input_boolean:
+  forecast_dal_ontladen_blokkeren:
+    name: Forecast Niet Ontladen In Goedkoop Dal
+    icon: mdi:battery-lock
   forecast_tonen_op_dashboard:
     name: Forecasting Tonen Op Dashboard
     icon: mdi:calendar-clock
@@ -135,6 +138,17 @@ sensor:
   # 3. Statistieken over de afgelopen 7 dagen (rollend)
   #    Op de tellers uit "Forecast Teller ..." (zie template-sectie)
   # -------------------------------------------------------------------
+  # Gemiddeld werkelijk netlaadvermogen over de recente laadsessies
+  - platform: statistics
+    name: "Forecast Gemeten Laadvermogen"
+    unique_id: forecast_gemeten_laadvermogen
+    entity_id: sensor.forecast_netladen_vermogen
+    state_characteristic: mean
+    max_age:
+      days: 14
+    sampling_size: 3000
+    precision: 0
+
   - platform: statistics
     name: "Forecast Zon Productie 7 Dagen"
     unique_id: forecast_zon_productie_7_dagen
@@ -206,6 +220,15 @@ sensor:
     precision: 2
 
 template:
+  # Ontladen vasthouden in een goedkoop dal (alleen modus Dynamisch NOM + Forecasting)
+  - binary_sensor:
+      - name: "Forecast Dal Ontladen Geblokkeerd"
+        unique_id: forecast_dal_ontladen_geblokkeerd
+        icon: mdi:battery-lock
+        state: >
+          {{ is_state('input_select.zendure_2400_ac_modus_selecteren', 'Dynamisch NOM + Forecasting')
+             and is_state_attr('sensor.zendure_forecast_plan', 'ontladen_vasthouden', true) }}
+
   # -------------------------------------------------------------------
   # Vermogenssensoren (bron voor de integratiesensoren hierboven)
   #   P1:      positief = import, negatief = export
@@ -262,6 +285,24 @@ template:
 
       # Het deel van het laadvermogen dat NIET uit het net komt (dus uit zon-overschot).
       # Het netdeel is de P1-import, begrensd op het laadvermogen.
+      # Laadvermogen uit het net zoals de accu het echt haalt. Alleen beschikbaar tijdens
+      # netladen (> 300 W), zodat de statistiek hieronder alleen echte laadsessies meetelt.
+      - name: "Forecast Netladen Vermogen"
+        unique_id: forecast_netladen_vermogen
+        unit_of_measurement: "W"
+        device_class: power
+        state_class: measurement
+        availability: >
+          {% set laden = [states('sensor.zendure_2400_ac_vermogen_aansturing') | float(0), 0] | max %}
+          {% set import_w = [states('sensor.p1_aansturing_vermogen') | float(0), 0] | max %}
+          {{ has_value('sensor.p1_aansturing_vermogen')
+             and has_value('sensor.zendure_2400_ac_vermogen_aansturing')
+             and ([import_w, laden] | min) > 300 }}
+        state: >
+          {% set laden = [states('sensor.zendure_2400_ac_vermogen_aansturing') | float(0), 0] | max %}
+          {% set import_w = [states('sensor.p1_aansturing_vermogen') | float(0), 0] | max %}
+          {{ [import_w, laden] | min | round(0) }}
+
       - name: "Forecast Zendure Laden Uit Zon Vermogen"
         unique_id: forecast_zendure_laden_uit_zon_vermogen
         unit_of_measurement: "W"
@@ -377,6 +418,8 @@ template:
           - input_number.forecast_laad_marge
           - input_number.forecast_betrouwbaarheid
           - input_number.forecast_gebruik_standaard
+          - input_boolean.forecast_dal_ontladen_blokkeren
+          - sensor.forecast_gemeten_laadvermogen
           - input_number.dynamisch_minimale_spread
           - input_number.zendure_2400_ac_max_oplaadvermogen
           - input_boolean.dynamisch_15_minuten
@@ -393,7 +436,11 @@ template:
       dt_h: "{{ 0.25 if is_state('input_boolean.dynamisch_15_minuten', 'on') else 1.0 }}"
 
       # ---- Batterij ---------------------------------------------------
-      p_max_kw: "{{ [states('input_number.zendure_2400_ac_max_oplaadvermogen') | float(2400), 100] | max / 1000 }}"
+      p_set_kw: "{{ [states('input_number.zendure_2400_ac_max_oplaadvermogen') | float(2400), 100] | max / 1000 }}"
+      # Gemeten gemiddeld netlaadvermogen (W); onbekend of < 500 W = nog niet bruikbaar
+      p_gemeten_w: "{{ states('sensor.forecast_gemeten_laadvermogen') | float(0) }}"
+      # Rekenen met wat de accu echt haalt, nooit meer dan de ingestelde maximum
+      p_max_kw: "{{ ([p_set_kw, p_gemeten_w / 1000] | min) if p_gemeten_w >= 500 else p_set_kw }}"
       e_slot: "{{ (p_max_kw * dt_h) | round(4) }}"
       cap: "{{ states('sensor.zendure_2400_ac_totale_capaciteit') | float(0) }}"
       soc: "{{ states('sensor.zendure_2400_ac_laadpercentage') | float(0) }}"
@@ -415,6 +462,7 @@ template:
         {% set m = states('sensor.zendure_2400_ac_efficientie_export_24u_gemiddelde') | float(0) %}
         {% set e = m if m >= 70 else eq %}
         {{ (e if 50 <= e <= 100 else 92) / 100 }}
+      eff_rt: "{{ (eff_in * eff_out) | round(4) }}"
 
       # ---- Zonne-energie (kWh) ----------------------------------------
       # -1 = sensor niet ingevuld of niet beschikbaar
@@ -529,6 +577,19 @@ template:
           {%- endfor -%}
         {%- endif -%}
         {{ ns.l }}
+      # Prijsstatistiek van de hele dag en de prijs van nu (voor dal-herkenning)
+      p_dag_gem: >
+        {% set v = raw_vandaag | map(attribute='value') | list %}
+        {% if v | length > 0 %}{{ (v | sum / (v | length)) | round(5) }}{% else %}0{% endif %}
+      p_dag_min: >
+        {% set v = raw_vandaag | map(attribute='value') | list %}
+        {% if v | length > 0 %}{{ v | min }}{% else %}0{% endif %}
+      prijs_nu: >
+        {%- set ns = namespace(p=none) -%}
+        {%- for p in raw_vandaag -%}
+          {%- if as_timestamp(p.start) <= nu_ts < as_timestamp(p.end) -%}{%- set ns.p = p.value | float(0) -%}{%- endif -%}
+        {%- endfor -%}
+        {{ ns.p if ns.p is not none else 999 }}
       # Aantal slots dat nodig is om de batterij volledig te vullen
       n_ref: >
         {% if e_slot > 0 and s_max > 0 %}
@@ -600,11 +661,15 @@ template:
         {% if ns.n > 0 %}{{ (ns.som / ns.n) | round(5) }}{% else %}{{ p_vandaag_ref }}{% endif %}
       # Vergelijkingsprijs: bij B de goedkoopste laadprijs van morgen, bij A het gemiddelde van de overbrugging
       p_vergelijk: "{{ p_morgen_ref if scenario == 'B' else p_bridge_avg }}"
+      # Opgeslagen energie levert door het round-trip-verlies minder op: reken de waarde ervan terug
+      p_vergelijk_eff: "{{ (p_vergelijk * eff_rt) if p_vergelijk > 0 else p_vergelijk }}"
       gekozen: >
         {%- set ns = namespace(l=[]) -%}
         {%- for x in kand | sort(attribute='v') -%}
-          {%- set sp = (p_vergelijk - x.v) / ([x.v | abs, 0.02] | max) * 100 -%}
-          {%- if ns.l | length < n_slots and sp >= spread_min and sp > 0 -%}
+          {%- set sp = (p_vergelijk_eff - x.v) / ([x.v | abs, 0.02] | max) * 100 -%}
+          {#- Scenario A: ook onder het daggemiddelde (op een vlakke dag is er geen dal) -#}
+          {%- set dal_ok = scenario == 'B' or x.v <= p_dag_gem -%}
+          {%- if ns.l | length < n_slots and sp >= spread_min and sp > 0 and dal_ok -%}
             {%- set ns.l = ns.l + [x] -%}
           {%- endif -%}
         {%- endfor -%}
@@ -617,6 +682,14 @@ template:
       p_gekozen_avg: >
         {% if gekozen | length > 0 %}{{ (gekozen | map(attribute='v') | sum / (gekozen | length)) | round(5) }}{% else %}0{% endif %}
       kosten: "{{ (gepland_ac * p_gekozen_avg) | round(2) }}"
+
+      # ---- Goedkoop dal: accu niet ontladen --------------------------------
+      # Dal = prijs nu onder (laagste dagprijs / rendement) en onder het daggemiddelde.
+      dal_drempel: "{{ (p_dag_min + (p_dag_min | abs) * (1 / eff_rt - 1)) | round(5) if eff_rt > 0 else p_dag_min }}"
+      in_dal: "{{ prijzen_ok and prijs_nu < 999 and prijs_nu <= dal_drempel and prijs_nu < p_dag_gem }}"
+      # Alleen vasthouden als er nog uit het net bijgeladen moet worden (accu komt niet vol uit zon)
+      ontladen_vasthouden: >
+        {{ is_state('input_boolean.forecast_dal_ontladen_blokkeren', 'on') and in_dal and grid_ac >= 0.05 }}
 
       # ---- Overzicht voor morgen --------------------------------------
       morgen_direct: "{{ direct_morgen_kwh | round(2) }}"
@@ -684,6 +757,15 @@ template:
               {%- set ns.l = ns.l + [{'start': x.s | timestamp_custom('%H:%M', true), 'eind': x.e | timestamp_custom('%H:%M', true), 'prijs': x.v}] -%}
             {%- endfor -%}
             {{ ns.l }}
+          # --- Dal en laadvermogen ---
+          prijs_nu: "{{ prijs_nu if prijs_nu < 999 else none }}"
+          dal_drempel: "{{ dal_drempel }}"
+          in_dal: "{{ in_dal }}"
+          ontladen_vasthouden: "{{ ontladen_vasthouden }}"
+          laadvermogen_gebruikt_kw: "{{ p_max_kw | round(2) }}"
+          laadvermogen_gemeten_w: "{{ p_gemeten_w if p_gemeten_w >= 500 else none }}"
+          laadvermogen_ingesteld_kw: "{{ p_set_kw }}"
+          rendement_round_trip_pct: "{{ (eff_rt * 100) | round(1) }}"
           # --- Invoer zoals gebruikt ---
           zon_resterend_vandaag_kwh: "{{ zon_rest }}"
           zon_morgen_kwh: "{{ zon_morgen }}"

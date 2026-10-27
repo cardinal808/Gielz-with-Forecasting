@@ -921,6 +921,15 @@ actions:
           - condition: trigger
             id:
               - aansturing_trigger
+          - alias: Ontladen niet geblokkeerd (HVAC aan of goedkoop dal)
+            condition: not
+            conditions:
+              - condition: state
+                entity_id: binary_sensor.hvac_ontladen_geblokkeerd
+                state: 'on'
+              - condition: state
+                entity_id: binary_sensor.forecast_dal_ontladen_geblokkeerd
+                state: 'on'
           - alias: >-
               sensor.p1_aansturing_vermogen groter dan
               input_number.zendure_2400_ac_start_ontladen_bij
@@ -1050,6 +1059,15 @@ actions:
           - condition: trigger
             id:
               - aansturing_trigger
+          - alias: Ontladen niet geblokkeerd (HVAC aan of goedkoop dal)
+            condition: not
+            conditions:
+              - condition: state
+                entity_id: binary_sensor.hvac_ontladen_geblokkeerd
+                state: 'on'
+              - condition: state
+                entity_id: binary_sensor.forecast_dal_ontladen_geblokkeerd
+                state: 'on'
           - condition: state
             entity_id: sensor.zendure_2400_ac_soc_limiet_status
             state:
@@ -1391,6 +1409,53 @@ actions:
               entity_id: input_select.zendure_2400_ac_modus_selecteren
               name: ' '
         alias: Tijdens opladen balanceren naar -xxx watt (100% van aanbod)
+      - conditions:
+          - condition: trigger
+            id:
+              - aansturing_trigger
+          - alias: Ontladen geblokkeerd (HVAC aan of goedkoop dal)
+            condition: or
+            conditions:
+              - condition: state
+                entity_id: binary_sensor.hvac_ontladen_geblokkeerd
+                state: 'on'
+                for:
+                  hours: 0
+                  minutes: 0
+                  seconds: 10
+              - condition: state
+                entity_id: binary_sensor.forecast_dal_ontladen_geblokkeerd
+                state: 'on'
+                for:
+                  hours: 0
+                  minutes: 0
+                  seconds: 10
+          - condition: state
+            entity_id: sensor.zendure_2400_ac_modus
+            state: Ontladen
+          - condition: state
+            entity_id: input_boolean.dynamisch_ontladen_loopt
+            state:
+              - 'off'
+          - condition: state
+            entity_id: input_select.zendure_2400_ac_modus_selecteren
+            state:
+              - Nul op de meter
+              - Alleen slim ontladen
+              - Dynamisch NOM
+              - Dynamisch NOM + Forecasting
+              - Dynamisch NOM (Duur)
+              - Dynamisch Handelen + NOM
+        sequence:
+          - action: rest_command.zendure_stop_met_alles
+            data:
+              sn: '{{ states(''sensor.zendure_2400_ac_serienummer'') }}'
+          - action: logbook.log
+            data:
+              message: 🌀Ontladen gestopt (HVAC aan of goedkoop dal, alleen laden toegestaan) —
+              entity_id: input_select.zendure_2400_ac_modus_selecteren
+              name: ' '
+        alias: Ontladen stoppen (HVAC of goedkoop dal, alleen laden toegestaan)
   - alias: Handmatige Aansturing
     choose:
       - conditions:
